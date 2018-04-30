@@ -33,6 +33,19 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'somethingsecret'
 app.config['LDAP_AUTH_SERVER'] = 'ldap://your_ldap_server_address'
 app.config['LDAP_TOP_DN'] = 'ou=people,dc=your_org,dc=your_domain'
+app.config['LDAP_BIND_ACCOUNT'] = 'your_lpdap_bind_account'
+app.config['LDAP_BIND_PASSWORD'] = 'your_lpdap_bind_account_password'
+
+#Optional
+#To allow/deny login for specific users/groups use a combination of these settings
+#app.config['LDAP_DENY_GROUPS'] = '[]'
+#app.config['LDAP_ALLOW_GROUPS'] = '[]'
+#app.config['LDAP_ALLOW_USERS'] = '[]'
+#app.config['LDAP_DENY_USERS'] = '[]'
+#e.g.
+#app.config['LDAP_ALLOW_USERS'] = '["user1", "user2", "user3"]'
+
+
 app.register_blueprint(token, url_prefix='/auth')
 
 
