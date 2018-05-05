@@ -4,6 +4,7 @@
 
 from functools import wraps
 from flask import Blueprint, current_app, jsonify, Response, request, url_for
+from enum import Enum
 from itsdangerous import TimedJSONWebSignatureSerializer as Serializer
 from itsdangerous import BadSignature, SignatureExpired
 import json
@@ -22,25 +23,34 @@ __all__ = [
     'token'
     ]
 
+class UserAccess(Enum):
+    DEFAULT_ALLOW = 1
+    DEFAULT_DENY = 2
+    NOT_FOUND = 3
+    DENY = 4
+    DENY_GROUP = 5
+    ALLOW = 6
+    ALLOW_GROUP = 7
 
+class UserAuth(Enum):
+    DEFAULT_SUCCESS = 1
+    DEFAULT_FAILURE = 2
+    SUCCESS = 3
+    FAILURE = 4
+    
 class User(object):
 
     def __init__(self, username):
         self.username = username
-
-    def verify_password(self, password):
+        
+    def verify_user(self):
         connection_bind = ldap.initialize(current_app.config['LDAP_AUTH_SERVER'])
         
         bind_account =  current_app.config['LDAP_BIND_ACCOUNT']
         bind_password = current_app.config['LDAP_BIND_PASSWORD']
-
-        connection_auth = ldap.initialize(current_app.config['LDAP_AUTH_SERVER'])
-
+        
         connection_bind.protocol_version = 3
         connection_bind.set_option(ldap.OPT_REFERRALS, 0)
-
-        connection_auth.protocol_version = 3
-        connection_auth.set_option(ldap.OPT_REFERRALS, 0)
 
         try:
             logger.debug('Attempting LDAP bind for account %s', bind_account)
@@ -55,22 +65,25 @@ class User(object):
                             
             if not result:
                 logger.error('User %s not found',self.username )
-                return False
+                return (UserAccess.NOT_FOUND, None)
 
             dn = result[0][0]
 
             usergroups = []
             try:
-                usergroups = result[0][1]['memberOf']
-            except IndexError, e:
+                #Byte array
+                b_usergroups = result[0][1]['memberOf']
+                
+                #Covert elements in array from byte to stirng
+                usergroups = [ x.decode() for x in b_usergroups ]
+                
+            except IndexError as  e:
                 logger.warn('Error referencing array index for getting usergroups')
-            except KeyError, e:
+            except KeyError as e:
                 logger.warn('memberOf key missing for user {0}'.format(dn))
 
             logger.debug("User is {0}".format(self.username))
-            #logger.debug('User %s is member of %s groups', dn, usergroups)
-            #logger.debug('Group list has %d elements', len(usergroups))
-                
+            
             allowusers = json.loads (current_app.config.get('LDAP_ALLOW_USERS', '[]'))
             denyusers = json.loads (current_app.config.get('LDAP_DENY_USERS', '[]' ))
             
@@ -78,87 +91,77 @@ class User(object):
             denygroups = json.loads (current_app.config.get('LDAP_DENY_GROUPS', '[]' ))
             
             #Check Deny
-            denyme = False
             if denyusers:
                 #Check current user is in the list
                 if self.username in denyusers:
-                    denyme = True
                     logger.error('User %s is in deny list', dn)
+                    return (UserAccess.DENY, dn)
                     
-            if not denyme and denygroups:
+            if denygroups:
                 #Check current user is in the memberOf list
                 for dg in denygroups:
-                    for ug in usergroups:    
+                    for ug in usergroups:
                         if  re.match("CN={0}".format(dg), ug, re.IGNORECASE):
-                            denyme = True
                             logger.error('Group {0} for user {1} is in deny list'.format(dg,dn))
-                            break
-                    else:
-                        continue
-                        
-                    break
+                            return (UserAccess.DENY_GROUP, dn)
                 else:
                     logger.info('Groups for User {0} not in deny list'.format(dn))
-
-            if denyme:
-              logger.error('User {0} is denied'.format(dn))
-              return False
-                
+                    
             #Check Allow                
-            allowme = False
+            
             if allowusers:
                 logger.debug("Allow user list is {0}".format(allowusers))
                 #Check current user is in the list
                 if self.username in allowusers:
-                    allowme = True
                     logger.info('User %s is in allow list', dn)
+                    return (UserAccess.ALLOW, dn)
 
-            if not allowme and allowgroups:
+            if allowgroups:
                 #Check current user is in the memberOf list
                 for ag in allowgroups:
                     for ug in usergroups:    
+                        #logger.info('Allow group {0}. Use group {1}.'.format(ag,ug))
+                        #logger.info('Allow group type {0}. Use group type {1}.'.format(type(ag),type(ug)))
                         if  re.match("CN={0}".format(ag), ug, re.IGNORECASE):
-                            allowme = True
+
+
                             logger.info('Group {0} for user {1} is in allow list'.format(ag,dn))
-                            break
-                    else:
-                        continue
-                        
-                    break
+                            return (UserAccess.ALLOW , dn)
                 else:
                     logger.error('Groups for User {0} not in allow list'.format(dn))
-
-            
-            if not allowme:
-                logger.error('User {0} is not allowed'.format(dn))
-                return False
-            
-                
-            
+                    return (UserAccess.DEFAULT_DENY, dn)
                     
-            try:
-                logger.debug('Attempting LDAP bind for account %s', dn)
-                connection_auth.bind_s(dn, password)
-                logger.info('LDAP bind for account %s successful', dn)
-                return True
-            except ldap.INVALID_CREDENTIALS:
-                logger.error('LDAP bind for account %s failed. Invalid credentials', dn)
-                return False
-            else:
-                try:
-                    connection_auth.unbind_s()
-                except:
-                    None
+            return (UserAccess.DEFAULT_ALLOW, dn)
+        
         except ldap.INVALID_CREDENTIALS:
-            logger.error('LDAP bind for account %s failed. Invalid credentials', bind_account)
-            return False
+              logger.error('LDAP bind for account %s failed. Invalid credentials', bind_account)
+              return (UserAccess.DEFAULT_DENY, dn)
         else:
             try:
                 connection_bind.unbind_s()
             except:
-                None
+                pass
+                
+    def verify_password(self, dn, password):
+        connection_auth = ldap.initialize(current_app.config['LDAP_AUTH_SERVER'])
+        connection_auth.protocol_version = 3
+        connection_auth.set_option(ldap.OPT_REFERRALS, 0)
+                
+        try:
+            logger.debug('Attempting LDAP bind for account %s', dn)
+            connection_auth.bind_s(dn, password)
+            logger.info('LDAP bind for account %s successful', dn)
+            return UserAuth.SUCCESS
+        except ldap.INVALID_CREDENTIALS:
+            logger.error('LDAP bind for account %s failed. Invalid credentials', dn)
+            return UserAuth.FAILURE
+        else:
+            try:
+                connection_auth.unbind_s()
+            except:
+                pass
 
-        return False
+        return UserAuth.DEFAULT_FAILURE
 
     def generate_auth_token(self):
         s = Serializer(current_app.config['SECRET_KEY'], expires_in=3600)
@@ -174,7 +177,7 @@ class User(object):
         return User(data['username'])
 
 
-def authenticate():
+def authenticate_401():
     message = {
         'error': 'unauthorized',
         'message': 'Please authenticate with a valid token',
@@ -189,7 +192,23 @@ def authenticate():
             }
         )
     return response
-
+    
+def authenticate_403():
+    message = {
+        'error': 'unauthorized',
+        'message': 'Please authenticate with an authorized user account',
+        'status': 403
+        }
+    response = Response(
+        json.dumps(message),
+        403,
+        {
+            'WWW-Authenticate': 'Basic realm="Authentication Required"',
+            'Location': url_for('token.request_token')
+            }
+        )
+    return response
+    
 
 def login_required(func):
     """LDAP authentication decorator"""
@@ -197,7 +216,7 @@ def login_required(func):
     def wrapper(*args, **kwargs):
         auth = request.authorization
         if not auth or not User.verify_auth_token(auth.username):
-            return authenticate()
+            return authenticate_401()
         return func(*args, **kwargs)
     return wrapper
 
@@ -208,11 +227,25 @@ def request_token():
     auth = request.authorization
     user = User(auth.username)
     print(auth.username)
-    if not auth or not user.verify_password(auth.password):
-        return authenticate()
-    response = {
-        'token': user.generate_auth_token() + ':'
-        }
-    return jsonify(response)
+    if auth:
+        retverifyuser = user.verify_user()
+        uservalidity = retverifyuser [0]
+        dn  = retverifyuser [1]
+        
+        if uservalidity in (UserAccess.DEFAULT_ALLOW, UserAccess.ALLOW, UserAccess.ALLOW_GROUP):
+            passwordvalidity = user.verify_password (dn,auth.password)
+            
+            if passwordvalidity in (UserAuth.DEFAULT_SUCCESS,UserAuth.SUCCESS):
+                response = {
+                'token': user.generate_auth_token() + ':'
+                }
+                return jsonify(response)
+            else:
+                return authenticate_401()
+        else:
+            return authenticate_403()
+    else:
+        return authenticate_401()
+        
 
 # EOF
