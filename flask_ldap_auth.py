@@ -66,16 +66,8 @@ class User(object):
                 logger.warn('Error referencing array index for getting usergroups')
             except KeyError, e:
                 logger.warn('memberOf key missing for user {0}'.format(dn))
-             
-            cn = ''
-            try:
-                cn = result[0][1]['cn'][0]
-            except IndexError, e:
-                logger.warn('Error referencing array index for getting cn')
-            except KeyError, e:
-                logger.warn('cn key missing for user {0}'.format(dn))
 
-            logger.debug("User cn is {0}".format(cn))
+            logger.debug("User is {0}".format(self.username))
             #logger.debug('User %s is member of %s groups', dn, usergroups)
             #logger.debug('Group list has %d elements', len(usergroups))
                 
@@ -89,7 +81,7 @@ class User(object):
             denyme = False
             if denyusers:
                 #Check current user is in the list
-                if cn in denyusers:
+                if self.username in denyusers:
                     denyme = True
                     logger.error('User %s is in deny list', dn)
                     
@@ -117,7 +109,7 @@ class User(object):
             if allowusers:
                 logger.debug("Allow user list is {0}".format(allowusers))
                 #Check current user is in the list
-                if cn in allowusers:
+                if self.username in allowusers:
                     allowme = True
                     logger.info('User %s is in allow list', dn)
 
